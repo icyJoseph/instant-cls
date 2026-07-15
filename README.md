@@ -119,6 +119,12 @@ Two things that make this work:
 
 > Installing the observer via `addInitScript` + baselining inside the frozen callback is deliberately more robust than observing *after* load or resolving on the first observer callback — both of which stop counting shifts too early.
 
+### `instant()` freezes client navigations, not direct visits
+
+`instant()`'s hold-back is a **client-side** mechanism — it coordinates the Next *client* router (via a `CookieStore` change event) to defer rendering the streamed content. So it freezes **soft/client navigations** (`goto('/')` → click), which is what the products CLS test relies on.
+
+It does **not** freeze a **direct/SSR visit**. On a hard `page.goto('/search?q=react')` there's no client router yet when the document request goes out, so the server streams the whole response (shell **and** results) and the grid is already populated inside the callback. The `/search` route ([`app/search/page.tsx`](./app/search/page.tsx)) and [`e2e/search.spec.ts`](./e2e/search.spec.ts) demonstrate this: the "does not hold a direct visit" test asserts the results are present despite `instant()`. To inspect an SSR page's instant shell, use the DevTools **Navigation Inspector** ("freeze on refresh") rather than the Playwright helper.
+
 ## Notes on the 0.1 threshold
 
 The test asserts `< 0.1`, the Core Web Vitals "good" bar. Two things are worth knowing if you adapt this:
@@ -134,11 +140,15 @@ app/
   products/
     page.tsx            Grid of <Suspense> cards; `export const instant = true`
     card.tsx            CardSkeleton + async ProductCard (shared fixed heights)
+  search/
+    page.tsx            SSR page reading searchParams; results behind Suspense
+    results.tsx         SearchResults + ResultsSkeleton
   globals.css           Shimmer keyframes (transform-only)
 lib/
-  products.ts           Fake catalog + delayed, uncached fetchProduct()
+  products.ts           Fake catalog + delayed fetchProduct() / searchProducts()
 e2e/
-  products.spec.ts      instant() skeleton test + CLS measurement test
+  products.spec.ts      instant() skeleton test + instant()-driven CLS test
+  search.spec.ts        SSR direct-visit streaming + instant() SSR limitation
 playwright.config.ts    webServer runs build+start; Chromium project
 next.config.ts          cacheComponents: true
 ```

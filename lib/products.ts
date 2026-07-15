@@ -130,3 +130,21 @@ export async function fetchProduct(id: string): Promise<Product> {
   await sleep(500 + index * 90);
   return product;
 }
+
+/**
+ * Simulates an uncached search that depends on the request (`searchParams`).
+ * Because it reads a runtime input and isn't cached, it must live behind a
+ * Suspense boundary — which is what lets the results grid be held back at the
+ * shell during an instant navigation. Falls back to the full catalog so the
+ * demo always has results to stream in.
+ */
+export async function searchProducts(query: string): Promise<Product[]> {
+  await sleep(700);
+  const q = query.trim().toLowerCase();
+  if (!q) return PRODUCTS;
+  const matches = PRODUCTS.filter(
+    (p) =>
+      p.name.toLowerCase().includes(q) || p.blurb.toLowerCase().includes(q)
+  );
+  return matches.length > 0 ? matches : PRODUCTS;
+}
