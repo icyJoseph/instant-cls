@@ -117,7 +117,7 @@ await page.waitForTimeout(500); // let shifts settle
 expect(await page.evaluate(() => window.__cls)).toBeLessThan(0.1);
 ```
 
-> Installing the observer via `addInitScript` + baselining inside the frozen callback is deliberately more robust than observing *after* load or resolving on the first observer callback — both of which stop counting shifts too early. Because the measurement is a direct visit (no click), `hadRecentInput` never excludes the shift.
+> Installing the observer via `addInitScript` + baselining inside the frozen callback is deliberately more robust than observing *after* load or resolving on the first observer callback — both of which stop counting shifts too early. `hadRecentInput` doesn't hide the shift in either path: the SSR visit has no input at all, and on the client-nav path `instant()` defers streaming until after the callback (plus the data delay), so the swap lands past the 500ms input window.
 
 ### `instant()` works on direct visits too — if the testing API is enabled
 
@@ -160,7 +160,7 @@ e2e/
   products.spec.ts      instant() shell + CLS on SSR first-land AND client nav
   search.spec.ts        instant() freezing a direct/SSR visit at the shell
 playwright.config.ts    webServer runs build+start; Chromium project
-next.config.ts          cacheComponents: true
+next.config.ts          cacheComponents + exposeTestingApiInProductionBuild
 ```
 
 ## Further reading
