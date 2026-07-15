@@ -82,6 +82,13 @@ await expect(page.getByTestId("product-card")).toHaveCount(12);
 
 This is the key idea. Rather than racing the stream on a page load, the CLS test uses `instant()` to **freeze the navigation at the skeleton state**, zeroes the CLS counter at that exact frozen layout, then **releases and measures the shift** as real content replaces the skeletons. The shift is therefore attributed deterministically to the skeleton→content swap — which is the thing we actually want to guard.
 
+Both entry paths are covered by a shared `freezeAndMeasureCLS` helper, because they produce different initial UI (see [the Next.js docs](node_modules/next/dist/docs/01-app/02-guides/instant-navigation.md)):
+
+- **Direct / SSR first visit** — `arrive` is `page.goto('/products')`; the whole tree renders from the root.
+- **Client navigation** — `arrive` is a `<Link>` click; only the tree below the shared layout re-renders.
+
+Each asserts the shell is skeletons-only, baselines CLS there, releases, and asserts `< 0.1`.
+
 A `layout-shift` `PerformanceObserver` is installed via `page.addInitScript` (so it's live before first paint) and accumulates every non-input shift into `window.__cls`:
 
 ```ts
@@ -150,7 +157,7 @@ app/
 lib/
   products.ts           Fake catalog + delayed fetchProduct() / searchProducts()
 e2e/
-  products.spec.ts      instant() skeleton test + instant()-driven CLS test
+  products.spec.ts      instant() shell + CLS on SSR first-land AND client nav
   search.spec.ts        instant() freezing a direct/SSR visit at the shell
 playwright.config.ts    webServer runs build+start; Chromium project
 next.config.ts          cacheComponents: true
