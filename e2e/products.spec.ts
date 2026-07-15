@@ -71,26 +71,31 @@ test.describe("Products page skeletons", () => {
 
   test("skeleton -> content transition keeps CLS under 0.1", async ({
     page,
+    baseURL,
   }) => {
     await trackCLS(page);
-    await page.goto("/");
 
-    // instant() freezes the client navigation at its instant UI (the skeleton
-    // grid) and holds dynamic content back until the callback returns. That
-    // lets us baseline the CLS counter at the exact frozen skeleton layout, so
-    // we measure the shift caused *only* by real content replacing skeletons —
-    // deterministically, rather than racing the stream on a page load.
-    await instant(page, async () => {
-      await page.getByRole("link", { name: "Browse products" }).click();
+    // instant() freezes the visit at its instant UI (the skeleton grid) and
+    // holds dynamic content back until the callback returns. That lets us
+    // baseline the CLS counter at the exact frozen skeleton layout, so we
+    // measure the shift caused *only* by real content replacing skeletons —
+    // deterministically, rather than racing the stream. The lock works on a
+    // direct visit because exposeTestingApiInProductionBuild is enabled.
+    await instant(
+      page,
+      async () => {
+        await page.goto("/products");
 
-      // Frozen at the instant UI: skeletons only, no real cards yet.
-      await expect(page.getByTestId("card-skeleton")).toHaveCount(CARD_COUNT);
-      await expect(page.getByTestId("product-card")).toHaveCount(0);
+        // Frozen at the instant UI: skeletons only, no real cards yet.
+        await expect(page.getByTestId("card-skeleton")).toHaveCount(CARD_COUNT);
+        await expect(page.getByTestId("product-card")).toHaveCount(0);
 
-      // Baseline the counter at the frozen skeleton layout so CLS is attributed
-      // to the skeleton -> content swap and nothing before it.
-      await baselineCLS(page);
-    });
+        // Baseline the counter at the frozen skeleton layout so CLS is
+        // attributed to the skeleton -> content swap and nothing before it.
+        await baselineCLS(page);
+      },
+      { baseURL }
+    );
 
     // instant() released the lock: dynamic content now streams into the shell,
     // replacing each skeleton with its real card.

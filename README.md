@@ -37,7 +37,7 @@ pnpm test:e2e       # headless
 pnpm test:e2e:ui    # Playwright UI mode
 ```
 
-Playwright's `webServer` runs `pnpm build && pnpm start` automatically — instant navigation (prefetching + the static shell) only behaves like production under `next start`, not in `next dev`.
+Playwright's `webServer` runs `pnpm build && pnpm start` automatically — instant navigation (prefetching + the static shell) only behaves like production under `next start`, not in `next dev`. Because we test a production build, [`next.config.ts`](./next.config.ts) sets `experimental.exposeTestingApiInProductionBuild: true` so the `instant()` lock isn't stripped from the bundle (see [below](#instant-works-on-direct-visits-too--if-the-testing-api-is-enabled)).
 
 ## How it works
 
@@ -95,16 +95,14 @@ await page.addInitScript(() => {
   }).observe({ type: "layout-shift", buffered: true });
 });
 
-await page.goto("/");
-
 await instant(page, async () => {
-  await page.getByRole("link", { name: "Browse products" }).click();
+  await page.goto("/products");
   // Frozen at the skeleton grid — no real cards yet:
   await expect(page.getByTestId("card-skeleton")).toHaveCount(12);
   await expect(page.getByTestId("product-card")).toHaveCount(0);
   // Baseline the counter at the frozen skeleton layout:
   await page.evaluate(() => { window.__cls = 0; });
-});
+}, { baseURL });
 
 // instant() released → content streams in, replacing skeletons:
 await expect(page.getByTestId("product-card")).toHaveCount(12);
@@ -112,18 +110,23 @@ await page.waitForTimeout(500); // let shifts settle
 expect(await page.evaluate(() => window.__cls)).toBeLessThan(0.1);
 ```
 
-Two things that make this work:
+> Installing the observer via `addInitScript` + baselining inside the frozen callback is deliberately more robust than observing *after* load or resolving on the first observer callback — both of which stop counting shifts too early. Because the measurement is a direct visit (no click), `hadRecentInput` never excludes the shift.
 
-- **It must be a client navigation.** `instant()` holds back dynamic content for soft (prefetched) navigations; it does **not** freeze a hard `page.goto('/products')` — there the server just streams the whole response and the skeletons are gone before you can assert on them. So the measurement goes `goto('/')` → click → `instant()`.
-- **`hadRecentInput` isn't a problem here.** Shifts within 500ms of a user input are excluded from CLS. Because `instant()` defers streaming until the callback returns (and the data has an artificial delay), the skeleton→content shift lands well after the click, so it's still counted.
+### `instant()` works on direct visits too — if the testing API is enabled
 
-> Installing the observer via `addInitScript` + baselining inside the frozen callback is deliberately more robust than observing *after* load or resolving on the first observer callback — both of which stop counting shifts too early.
+`instant()`'s hold-back is normally stripped from **production** bundles: `next build` aliases the navigation-lock module to an inert stub, so `instant()` becomes a no-op and can't freeze anything (see `create-compiler-aliases.ts` in the `next` package). It's active in `next dev`, and in a production build **only** when you opt in:
 
-### `instant()` freezes client navigations, not direct visits
+```ts
+// next.config.ts
+const nextConfig = {
+  cacheComponents: true,
+  experimental: { exposeTestingApiInProductionBuild: true },
+};
+```
 
-`instant()`'s hold-back is a **client-side** mechanism — it coordinates the Next *client* router (via a `CookieStore` change event) to defer rendering the streamed content. So it freezes **soft/client navigations** (`goto('/')` → click), which is what the products CLS test relies on.
+With the API enabled, `instant()` freezes **both** client navigations *and* direct/SSR visits — the server serves the shell and holds dynamic content back while the lock is held (the MPA-capture path keys off a `self.__next_instant_test` flag). The `/search` route ([`app/search/page.tsx`](./app/search/page.tsx)) proves this: [`e2e/search.spec.ts`](./e2e/search.spec.ts) does `instant(() => page.goto('/search?q=react'))` and asserts the results grid is held at `count 0`, then streams in afterwards.
 
-It does **not** freeze a **direct/SSR visit**. On a hard `page.goto('/search?q=react')` there's no client router yet when the document request goes out, so the server streams the whole response (shell **and** results) and the grid is already populated inside the callback. The `/search` route ([`app/search/page.tsx`](./app/search/page.tsx)) and [`e2e/search.spec.ts`](./e2e/search.spec.ts) demonstrate this: the "does not hold a direct visit" test asserts the results are present despite `instant()`. To inspect an SSR page's instant shell, use the DevTools **Navigation Inspector** ("freeze on refresh") rather than the Playwright helper.
+> Without the flag, a hard `page.goto` inside `instant()` looks like it "doesn't freeze" — but that's the disabled stub, not a client-vs-SSR limitation. Since this repo runs its e2e suite against `next build && next start`, the flag is set in [`next.config.ts`](./next.config.ts).
 
 ## Notes on the 0.1 threshold
 
@@ -148,7 +151,7 @@ lib/
   products.ts           Fake catalog + delayed fetchProduct() / searchProducts()
 e2e/
   products.spec.ts      instant() skeleton test + instant()-driven CLS test
-  search.spec.ts        SSR direct-visit streaming + instant() SSR limitation
+  search.spec.ts        instant() freezing a direct/SSR visit at the shell
 playwright.config.ts    webServer runs build+start; Chromium project
 next.config.ts          cacheComponents: true
 ```
