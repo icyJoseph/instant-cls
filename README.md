@@ -78,11 +78,14 @@ await instant(page, async () => {
 await expect(page.getByTestId("product-card")).toHaveCount(12);
 ```
 
-### Measuring CLS
+### Measuring skeleton CLS with `instant()`
 
-The CLS test installs a `layout-shift` `PerformanceObserver` via `page.addInitScript` so it's present before the first paint, and accumulates every non-input shift:
+This is the key idea. Rather than racing the stream on a page load, the CLS test uses `instant()` to **freeze the navigation at the skeleton state**, zeroes the CLS counter at that exact frozen layout, then **releases and measures the shift** as real content replaces the skeletons. The shift is therefore attributed deterministically to the skeleton→content swap — which is the thing we actually want to guard.
+
+A `layout-shift` `PerformanceObserver` is installed via `page.addInitScript` (so it's live before first paint) and accumulates every non-input shift into `window.__cls`:
 
 ```ts
+// Observer installed once, before any navigation:
 await page.addInitScript(() => {
   window.__cls = 0;
   new PerformanceObserver((list) => {
@@ -92,13 +95,29 @@ await page.addInitScript(() => {
   }).observe({ type: "layout-shift", buffered: true });
 });
 
-await page.goto("/products", { waitUntil: "load" });
-await expect(page.getByTestId("product-card")).toHaveCount(12); // transition done
-await page.waitForTimeout(500);                                 // let shifts settle
+await page.goto("/");
+
+await instant(page, async () => {
+  await page.getByRole("link", { name: "Browse products" }).click();
+  // Frozen at the skeleton grid — no real cards yet:
+  await expect(page.getByTestId("card-skeleton")).toHaveCount(12);
+  await expect(page.getByTestId("product-card")).toHaveCount(0);
+  // Baseline the counter at the frozen skeleton layout:
+  await page.evaluate(() => { window.__cls = 0; });
+});
+
+// instant() released → content streams in, replacing skeletons:
+await expect(page.getByTestId("product-card")).toHaveCount(12);
+await page.waitForTimeout(500); // let shifts settle
 expect(await page.evaluate(() => window.__cls)).toBeLessThan(0.1);
 ```
 
-> This is deliberately more robust than observing *after* load or resolving on the first observer callback — both of which stop counting shifts too early.
+Two things that make this work:
+
+- **It must be a client navigation.** `instant()` holds back dynamic content for soft (prefetched) navigations; it does **not** freeze a hard `page.goto('/products')` — there the server just streams the whole response and the skeletons are gone before you can assert on them. So the measurement goes `goto('/')` → click → `instant()`.
+- **`hadRecentInput` isn't a problem here.** Shifts within 500ms of a user input are excluded from CLS. Because `instant()` defers streaming until the callback returns (and the data has an artificial delay), the skeleton→content shift lands well after the click, so it's still counted.
+
+> Installing the observer via `addInitScript` + baselining inside the frozen callback is deliberately more robust than observing *after* load or resolving on the first observer callback — both of which stop counting shifts too early.
 
 ## Notes on the 0.1 threshold
 

@@ -35,6 +35,13 @@ async function readCLS(page: Page): Promise<number> {
   return page.evaluate(() => (window as unknown as { __cls: number }).__cls);
 }
 
+/** Zeroes the accumulator so measurement starts from the current layout. */
+async function baselineCLS(page: Page) {
+  await page.evaluate(() => {
+    (window as unknown as { __cls: number }).__cls = 0;
+  });
+}
+
 test.describe("Products page skeletons", () => {
   test("skeletons are the instant UI, then real cards stream in", async ({
     page,
@@ -66,20 +73,34 @@ test.describe("Products page skeletons", () => {
     page,
   }) => {
     await trackCLS(page);
+    await page.goto("/");
 
-    // Direct visit: the skeleton grid ships in the static shell, then each card
-    // streams in and replaces its skeleton — the moment where a mis-sized
-    // skeleton would shift the layout.
-    await page.goto("/products", { waitUntil: "load" });
+    // instant() freezes the client navigation at its instant UI (the skeleton
+    // grid) and holds dynamic content back until the callback returns. That
+    // lets us baseline the CLS counter at the exact frozen skeleton layout, so
+    // we measure the shift caused *only* by real content replacing skeletons —
+    // deterministically, rather than racing the stream on a page load.
+    await instant(page, async () => {
+      await page.getByRole("link", { name: "Browse products" }).click();
 
-    // Wait for the full transition to complete...
+      // Frozen at the instant UI: skeletons only, no real cards yet.
+      await expect(page.getByTestId("card-skeleton")).toHaveCount(CARD_COUNT);
+      await expect(page.getByTestId("product-card")).toHaveCount(0);
+
+      // Baseline the counter at the frozen skeleton layout so CLS is attributed
+      // to the skeleton -> content swap and nothing before it.
+      await baselineCLS(page);
+    });
+
+    // instant() released the lock: dynamic content now streams into the shell,
+    // replacing each skeleton with its real card.
     await expect(page.getByTestId("product-card")).toHaveCount(CARD_COUNT);
     await expect(page.getByTestId("card-skeleton")).toHaveCount(0);
-    // ...and let any late shifts settle before reading the accumulated value.
+    // Let any late shifts settle before reading the accumulated value.
     await page.waitForTimeout(500);
 
     const cls = await readCLS(page);
-    console.log(`Measured CLS: ${cls}`);
+    console.log(`Skeleton -> content CLS: ${cls}`);
     expect(cls).toBeLessThan(0.1);
   });
 });
